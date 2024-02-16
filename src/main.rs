@@ -5,6 +5,7 @@ use std::time::Instant;
 use piston_window::*;
 use rand::Rng;
 
+#[derive(PartialEq)]
 struct GameObject {
     x: f64,
     y: f64,
@@ -23,6 +24,7 @@ struct Player {
     dx: f64,
     last_shot_time: f64, // Track the last shot time
     shot_cooldown: f64, // Cooldown duration between shots
+    spread_shooting: bool ,
 }
 
 impl Player {
@@ -32,14 +34,29 @@ impl Player {
             dx: 0.0,
             last_shot_time: 0.0,
             shot_cooldown: 0.5, // Half a second cooldown
+            spread_shooting: false,
         }
     }
 
     fn shoot(&mut self, current_time: f64, projectiles: &mut Vec<Projectile>) {
         if current_time - self.last_shot_time >= self.shot_cooldown {
-            projectiles.push(Projectile::new(self.obj.x + 7.5, self.obj.y));
-            self.last_shot_time = current_time;
+            self.forced_shoot(current_time, projectiles);
         }
+    }
+
+    fn forced_shoot(&mut self, current_time: f64, projectiles: &mut Vec<Projectile>) {
+        projectiles.push(Projectile::new(self.obj.x + 7.5, self.obj.y));
+
+        if self.spread_shooting {
+            // Increase the horizontal offset and spawn the side projectiles a bit lower
+            let offset_x = 30.0; // Increased offset for more spread
+            let offset_y = 5.0; // Spawn the side projectiles a bit lower
+
+            projectiles.push(Projectile::new(self.obj.x + self.obj.width / 2.0 - offset_x, self.obj.y + offset_y));
+            projectiles.push(Projectile::new(self.obj.x + self.obj.width / 2.0 + offset_x, self.obj.y + offset_y));
+        }
+
+        self.last_shot_time = current_time;
     }
 
     fn update(&mut self) {
@@ -53,6 +70,7 @@ impl Player {
     }
 }
 
+#[derive(PartialEq)]
 struct Projectile {
     obj: GameObject,
     dy: f64,
@@ -99,6 +117,34 @@ enum GameState {
     Paused,
 }
 
+#[derive(PartialEq, Eq, Clone)]
+enum PowerUpType {
+    ScreenClearingBomb,
+    AutoShoot,
+    SpreadShot,
+}
+
+struct PowerUp {
+    obj: GameObject,
+    power_up_type: PowerUpType,
+    velocity: f64, // Added velocity for falling movement
+}
+
+impl PowerUp {
+    fn new(x: f64, y: f64, power_up_type: PowerUpType) -> Self {
+        PowerUp {
+            obj: GameObject::new(x, y, 20.0, 20.0), // Example size, adjust as needed
+            power_up_type,
+            velocity: 2.0, // Slightly faster than asteroids, adjust as needed
+        }
+    }
+
+    // Update method for power-ups to fall down
+    fn update(&mut self) {
+        self.obj.y += self.velocity; // Move down based on velocity
+    }
+}
+
 struct Game {
     player: Player,
     projectiles: Vec<Projectile>,
@@ -107,6 +153,13 @@ struct Game {
     state: GameState,
     window_size: [f64; 2],
     score: u32, // Add a score field
+    asteroids_destroyed: usize,
+    power_ups: Vec<PowerUp>, // To store active power-ups
+    auto_shoot_active: bool,
+    auto_shoot_timer: f64, // Counts down from 5 when AutoShoot is activated
+    triple_shoot_timer: f64, // Counts down from 5 when TripleShoot is activated
+    asteroid_spawn_threshold: f64, // New: Dynamic threshold for spawning asteroids
+    asteroid_spawn_acceleration: f64, // New: Amount to decrease threshold each second
 }
 
 impl Game {
@@ -119,6 +172,13 @@ impl Game {
             state: GameState::Running,
             window_size,
             score: 0,
+            asteroids_destroyed: 0,
+            power_ups: Vec::new(),
+            auto_shoot_active: false,
+            auto_shoot_timer: 0.0,
+            triple_shoot_timer: 0.0,
+            asteroid_spawn_threshold: 600.0, // Starting condition for spawning
+            asteroid_spawn_acceleration: 2.0, // Example acceleration rate
         }
     }
 
@@ -157,16 +217,20 @@ impl Game {
 
         let mut events = Events::new(EventSettings::new().ups(60));
         let start_time = Instant::now();
+        let mut prev_instant = start_time;
 
         while let Some(event) = events.next(window) {
             let elapsed = start_time.elapsed();
+            let now = Instant::now();
+            let dt = now.duration_since(prev_instant).as_secs_f64();
+            prev_instant = now;
             let current_time = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9;
     
             self.handle_input(&event,  current_time);
             match self.state {
                 GameState::Running => {
                     let some_update_arg = event.update_args().is_some();
-                    self.update(some_update_arg);
+                    self.update(some_update_arg, dt, current_time);
             
                     window.draw_2d(&event, |c, g, device| {
                         self.render(c, g, &mut glyphs, device);
@@ -209,7 +273,7 @@ impl Game {
                 &points, transform, g);
     }
     
-    fn update(&mut self, some_update_args: bool) {
+    fn update(&mut self, some_update_args: bool, dt: f64, current_time: f64) {
         // Update game objects only if the game is running
         if self.state != GameState::Running { return; }
 
@@ -220,26 +284,94 @@ impl Game {
                 proj.update();
                 proj.obj.y > 0.0 // Retain projectile if it's still within the window
             });
+
+            // Update power-ups' positions
+            for power_up in &mut self.power_ups {
+                power_up.update();
+            }
+
+            if self.auto_shoot_active {
+                self.auto_shoot_timer -= dt;
+                if self.auto_shoot_timer <= 0.0 {
+                    self.auto_shoot_active = false; // Deactivate AutoShoot when the timer runs out
+                    self.auto_shoot_timer = 0.0; // Reset the timer
+                    self.player.forced_shoot(current_time, &mut self.projectiles); // Shoot once more when AutoShoot deactivates
+                } else {
+                    // Auto shoot logic: spawn a projectile at regular intervals or on each update
+                    self.player.shoot(current_time*3.0, &mut self.projectiles);
+                }
+            }
+
+            if self.player.spread_shooting {
+                self.triple_shoot_timer -= dt;
+                if self.triple_shoot_timer <= 0.0 {
+                    self.deactivate_spread_shot(); // Deactivate SpreadShot when the timer runs out
+                    self.triple_shoot_timer = 0.0; // Reset the timer
+                }
+            }
         }
-        self.update_asteroids();
+        self.update_asteroids(dt);
         self.check_collisions();
         self.check_game_over_conditions();
+        self.check_power_up_collisions();
     }
 
-    fn update_asteroids(&mut self) {
+    fn update_asteroids(&mut self, dt: f64) {
         // Asteroid spawning logic
-        self.spawn_asteroid_timer += 1.0; // Increment timer by 1 each frame, adjust logic as needed
-        if self.spawn_asteroid_timer > 600.0 { // Example condition, spawns an asteroid every 100 frames
-            let x_position = rand::thread_rng().gen_range(20.0..580.0); // Adjusted to ensure spawning within view
-            self.asteroids.push(Asteroid::new(x_position, 0.0)); // Random X position
+        // Decrease spawn threshold each second to speed up spawning
+        self.asteroid_spawn_threshold -= self.asteroid_spawn_acceleration * dt;
+        if self.asteroid_spawn_threshold < 100.0 { // Ensure there's a minimum threshold
+            self.asteroid_spawn_threshold = 100.0;
+        }
+
+        self.spawn_asteroid_timer += 1.0;
+        if self.spawn_asteroid_timer > self.asteroid_spawn_threshold {
+            let x_position = rand::thread_rng().gen_range(20.0..580.0); // Ensure spawning within view
+            self.asteroids.push(Asteroid::new(x_position, 0.0)); // Spawn asteroid at random X position
             self.spawn_asteroid_timer = 0.0; // Reset timer
-            }
+        }
 
         for asteroid in self.asteroids.iter_mut() {
             asteroid.update();
         }
     }
     
+    fn render_power_ups(&self, c: Context, g: &mut G2d) {
+        for power_up in &self.power_ups {
+            match power_up.power_up_type {
+                PowerUpType::SpreadShot => {
+                    // Coordinates for a triangle representing the power-up
+                    let points = [
+                        [power_up.obj.x, power_up.obj.y - 10.0], // Top point
+                        [power_up.obj.x - 10.0, power_up.obj.y + 10.0], // Bottom left
+                        [power_up.obj.x + 10.0, power_up.obj.y + 10.0], // Bottom right
+                    ];
+
+                    polygon(
+                        [0.75, 0.58, 0.89, 1.0], // Light purple
+                        &points,
+                        c.transform,
+                        g,
+                    );
+                },
+                PowerUpType::ScreenClearingBomb => {
+                    let transform = c.transform.trans(power_up.obj.x, power_up.obj.y);
+                    ellipse(
+                        [0.0, 0.0, 1.0, 1.0], // Blue color
+                        [0.0, 0.0, power_up.obj.width, power_up.obj.height], // Drawing a circle
+                        transform,
+                        g,
+                    );
+                },
+                PowerUpType::AutoShoot => {
+                    rectangle([0.0, 1.0, 1.0, 0.8], // Turquoise color
+                              [power_up.obj.x, power_up.obj.y, power_up.obj.width, power_up.obj.height],
+                              c.transform, g);
+                },
+            }
+        }
+    }
+
     fn render_game(&self, c: &Context, g: &mut G2d, glyphs: &mut Glyphs) {
         clear([0.0, 0.0, 0.0, 1.0], g); // Clear the screen with black
         rectangle([0.0, 1.0, 0.0, 1.0], // Player color
@@ -258,6 +390,9 @@ impl Game {
         for asteroid in &self.asteroids {
             Game::draw_hexagon(c.transform, g, asteroid);
         }
+
+        // Render power-ups
+        self.render_power_ups(c.clone(), g);
 
         // Draw lose-zone
         let lose_zone_height = 20.0;
@@ -413,22 +548,21 @@ impl Game {
             }
         }
 
-        // Remove collided projectiles and asteroids
-        // Make sure to remove items from the end to avoid index shifting issues
-        remove_projectiles.sort_unstable_by(|a, b| b.cmp(a)); // Sort in reverse
-        remove_asteroids.sort_unstable_by(|a, b| b.cmp(a));
-
-        for i in remove_projectiles {
-            if self.projectiles.len() > i {
-                self.projectiles.remove(i);
+         // Remove duplicates to ensure each asteroid is only removed once
+         remove_asteroids.sort();
+         remove_asteroids.dedup();
+ 
+         // Remove asteroids and projectiles safely
+         for i in remove_asteroids.iter().rev() {
+            if *i < self.asteroids.len() {
+                self.destroy_asteroid(*i);
             }
-        }
-
-        for j in remove_asteroids {
-            if self.projectiles.len() > j {
-                self.projectiles.remove(j);
+         }
+         for i in remove_projectiles.iter().rev() {
+            if *i < self.projectiles.len() {
+                self.projectiles.swap_remove(*i);
             }
-        }
+         }
     }
 
     fn check_collision(&self, obj1: &GameObject, obj2: &GameObject) -> bool {
@@ -450,6 +584,66 @@ impl Game {
 
         true
     }
+
+    fn destroy_asteroid(&mut self, asteroid_index: usize) {
+        self.asteroids.remove(asteroid_index);
+        self.asteroids_destroyed += 1;
+
+        if self.asteroids_destroyed % 10 == 0 { // Every 10 asteroids
+            self.spawn_random_power_up();
+        }
+    }
+
+    fn check_power_up_collisions(&mut self) {
+        let mut remove_power_up_indices = Vec::new();
+
+        for (i, power_up) in self.power_ups.iter().enumerate() {
+            for projectile in &self.projectiles {
+                if self.check_collision(&projectile.obj, &power_up.obj) {
+                    remove_power_up_indices.push(i);
+                    self.projectiles.remove(self.projectiles.iter().position(|x| x == projectile).unwrap());
+                    match power_up.power_up_type {
+                        PowerUpType::ScreenClearingBomb => {
+                            self.score += self.asteroids.len() as u32; // Add points for each asteroid destroyed
+                            self.asteroids.clear(); // Clear all asteroids
+                        },
+                        PowerUpType::AutoShoot => {
+                            self.auto_shoot_active = true;
+                            self.auto_shoot_timer = 7.0; // Activate AutoShoot for 7 seconds
+                        }
+                        PowerUpType::SpreadShot => {
+                            self.player.spread_shooting = true;
+                            self.triple_shoot_timer = 7.0; // Activate SpreadShoot for 7 seconds
+                        }
+                    }
+                    
+                    break;
+                }
+            }
+        }
+
+        // Remove collected power-ups
+        for index in remove_power_up_indices.iter().rev() {
+            self.power_ups.swap_remove(*index);
+        }
+    }
+
+    fn spawn_random_power_up(&mut self) {
+        let x = rand::thread_rng().gen_range(20.0..self.window_size[0] - 20.0);
+        let y = rand::thread_rng().gen_range(20.0..self.window_size[1] / 2.0); // Upper half
+        let power_up_type = match rand::thread_rng().gen_range(0..3) {
+            0 => PowerUpType::ScreenClearingBomb,
+            1 => PowerUpType::AutoShoot,
+            _ => PowerUpType::SpreadShot,
+        };
+        self.power_ups.push(PowerUp::new(x, y, power_up_type));
+    }
+
+    fn deactivate_spread_shot(&mut self) {
+        self.player.spread_shooting = false;
+        // Reset the player's shooting behavior once the power-up expires
+    }
+
 }
 
 fn main() {
