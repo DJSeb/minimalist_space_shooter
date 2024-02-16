@@ -9,6 +9,8 @@ Tématem je hra podobná Space Invaders. To by Chata mělo na chvilku zabavit.
 ## Instalace
 S Rustem na svém počítači si stáhněte projekt, v adresáři s Cargo.toml pak napište do terminálu `cargo build --release` aby se projekt zkompiloval. Nakonec do vytvořeného adresáře `target/release` zkopírujte adresář `assets`.
 
+Pokud máte Windows a Intel x86_64 procesor, můžete rovnou zkusit rozbalit zip soubor s buildem pro takový systém.
+
 ## Minimalist Space Shooter
 ### Popis
 Hra je podobná Space Invaders, hráč se snaží zastavit padající asteroidy, přitom může získat power-upy a zvyšovat skóre. Čím déle hráč hraje, tím více asteroidů spadne. Hru lze pozastavit či ukončit.
