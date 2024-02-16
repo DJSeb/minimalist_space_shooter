@@ -6,6 +6,9 @@ Chat vybral Rust & téma, Chat píše kód, já píšu, zdali to funguje a jak s
 
 Tématem je hra podobná Space Invaders. To by Chata mělo na chvilku zabavit.
 
+## Demo showcase
+https://youtu.be/K4z4PT3USh0
+
 ## Instalace
 S Rustem na svém počítači si stáhněte projekt, v adresáři s Cargo.toml pak napište do terminálu `cargo build --release` aby se projekt zkompiloval. Nakonec do vytvořeného adresáře `target/release` zkopírujte adresář `assets`.
 
